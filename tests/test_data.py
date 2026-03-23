@@ -2,7 +2,7 @@
 import pytest
 import pandas as pd
 import numpy as np
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock
 
 
@@ -309,6 +309,44 @@ def test_stocks_provider_rejects_unsupported_timeframe():
     provider = StocksProvider(config)
     with pytest.raises(ValueError, match="Unsupported timeframe"):
         provider.fetch_ohlcv("AAPL", "3d", since, until)
+
+
+def test_stocks_provider_includes_1m_and_5m_timeframes():
+    """StocksProvider supports 1m and 5m timeframes."""
+    from src.data.providers.stocks import StocksProvider
+
+    config = {"markets": {"stocks": {"symbols": ["AAPL"]}}}
+    provider = StocksProvider(config)
+    tfs = provider.available_timeframes()
+    assert "1m" in tfs
+    assert "5m" in tfs
+
+
+def test_stocks_provider_clamps_since_for_limited_timeframes():
+    """StocksProvider clamps since to the yfinance window limit and logs a warning."""
+    from src.data.providers.stocks import StocksProvider
+    from unittest.mock import patch
+
+    config = {"markets": {"stocks": {"fee_pct": 0.0}}}
+    # Request data from 2 years ago for a 1m timeframe (limit is 7 days)
+    since = datetime(2022, 1, 1, tzinfo=timezone.utc)
+    until = datetime(2022, 1, 2, tzinfo=timezone.utc)
+
+    fake_df = _make_ohlcv_df(5, start=datetime.now(timezone.utc) - timedelta(days=1))
+    fake_df.columns = [c.capitalize() for c in fake_df.columns]
+
+    captured_calls = []
+
+    def mock_download(*args, **kwargs):
+        captured_calls.append(kwargs.get("start"))
+        return fake_df
+
+    with patch("yfinance.download", side_effect=mock_download):
+        provider = StocksProvider(config)
+        provider.fetch_ohlcv("AAPL", "1m", since, until)
+
+    # The start date passed to yfinance should NOT be 2022-01-01
+    assert captured_calls[0] != "2022-01-01", "since was not clamped"
 
 
 def test_forex_provider_schema():

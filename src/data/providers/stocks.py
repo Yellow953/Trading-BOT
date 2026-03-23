@@ -1,6 +1,7 @@
 """yfinance-based stocks data provider."""
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from typing import Optional
 
 import pandas as pd
 import yfinance as yf
@@ -9,8 +10,26 @@ from src.data.providers.base import DataProvider
 
 logger = logging.getLogger(__name__)
 
-# yfinance native timeframe strings
-_YF_FETCH_TF = {"1h": "1h", "4h": "1h", "1d": "1d"}
+# yfinance native timeframe → fetch interval string
+_YF_FETCH_TF = {
+    "1m":  "1m",
+    "5m":  "5m",
+    "15m": "15m",
+    "1h":  "1h",
+    "4h":  "1h",   # fetch 1h, resample to 4h
+    "1d":  "1d",
+}
+
+# yfinance max lookback in days per timeframe (None = unlimited)
+_MAX_LOOKBACK_DAYS = {
+    "1m":  7,
+    "5m":  60,
+    "15m": 60,
+    "1h":  730,
+    "4h":  730,   # uses 1h data under the hood
+    "1d":  None,
+}
+
 _RESAMPLE_NEEDED = {"4h": "4h"}
 
 
@@ -22,13 +41,23 @@ class StocksProvider(DataProvider):
         return "yfinance_stocks"
 
     def fetch_ohlcv(self, symbol: str, timeframe: str, since: datetime, until: datetime) -> pd.DataFrame:
-        """Download OHLCV from yfinance, resampling to 4h when needed."""
         yf_tf = _YF_FETCH_TF.get(timeframe)
         if yf_tf is None:
             raise ValueError(
                 f"Unsupported timeframe '{timeframe}' for StocksProvider. "
                 f"Supported: {list(_YF_FETCH_TF)}"
             )
+
+        # Clamp `since` to yfinance window limit
+        max_days = _MAX_LOOKBACK_DAYS.get(timeframe)
+        if max_days is not None:
+            earliest_allowed = datetime.now(tz=timezone.utc) - timedelta(days=max_days)
+            if since < earliest_allowed:
+                logger.warning(
+                    "Requested since=%s exceeds yfinance %s limit (%d days). Clamping to %s.",
+                    since, timeframe, max_days, earliest_allowed,
+                )
+                since = earliest_allowed
 
         raw = yf.download(
             symbol,
@@ -60,6 +89,9 @@ class StocksProvider(DataProvider):
         if df.empty:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
         df = df.copy()
+        # Handle both flat and MultiIndex columns (yfinance behavior varies by version)
+        if hasattr(df.columns, "levels"):
+            df.columns = df.columns.get_level_values(0)
         df.columns = [c.lower() for c in df.columns]
         df = df[["open", "high", "low", "close", "volume"]]
         if df.index.tz is None:

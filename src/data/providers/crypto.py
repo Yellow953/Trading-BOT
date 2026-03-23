@@ -28,8 +28,8 @@ class CryptoProvider(DataProvider):
             ex = getattr(ccxt, exchange_id)({"enableRateLimit": True})
             ex.load_markets()
             return ex
-        except Exception as e:
-            logger.warning("Failed to init %s (%s), falling back to kraken", exchange_id, e)
+        except (ccxt.ExchangeNotAvailable, ccxt.BadSymbol, AttributeError) as e:
+            logger.warning("Exchange '%s' unavailable (%s), falling back to kraken", exchange_id, e)
             ex = ccxt.kraken({"enableRateLimit": True})
             ex.load_markets()
             return ex
