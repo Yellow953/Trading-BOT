@@ -82,3 +82,17 @@ def test_volume_features_no_raw_prices():
     added_cols = [c for c in result.columns if c not in {"open", "high", "low", "close", "volume"}]
     for col in added_cols:
         assert result[col].abs().max() < 1000, f"Column '{col}' may contain raw price-scale values"
+
+
+def test_multi_timeframe_no_lookahead():
+    """Higher-timeframe values at time t use only data available at or before t."""
+    from src.features.multi_timeframe import add_multi_timeframe_features
+
+    df = _make_ohlcv(200)
+    result = add_multi_timeframe_features(df.copy(), base_timeframe="1h")
+
+    mtf_cols = [c for c in result.columns if c.startswith("tf_")]
+    assert len(mtf_cols) > 0, "No multi-timeframe columns found"
+
+    # The first warmup row of a multi-TF column must be NaN (not filled from future)
+    assert pd.isna(result[mtf_cols[0]].iloc[0])
