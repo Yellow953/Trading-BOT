@@ -42,16 +42,18 @@ class Signal:
 
 @dataclass
 class Trade:
+    """Represents a fully closed trade. Created by portfolio.py when a Position is closed."""
     symbol: str
     direction: Literal["LONG", "SHORT"]
     entry_price: float
     exit_price: float
     size: float
-    fees: float
+    fees: float                    # total fees for both legs
     entry_time: datetime
     exit_time: datetime
-    pnl: float
-    pnl_pct: float
+    pnl: float                     # net P&L after fees
+    pnl_pct: float                 # pnl / (entry_price * size)
+    exit_reason: Literal["stop_loss", "take_profit", "trailing_stop", "signal", "circuit_breaker"]
 
 @dataclass
 class Position:
@@ -232,18 +234,22 @@ class DataProvider(ABC):
 - Chaikin Money Flow (20-period)
 
 **`multi_timeframe.py`**
-- Resamples base OHLCV to 2-3 higher timeframes
+- Resamples base OHLCV to higher timeframes using this fixed map:
+  - Base 1h → higher timeframes: 4h, 1d
+  - Base 4h → higher timeframes: 1d
+  - Base 1d → no higher timeframes (skip multi-timeframe features)
 - Computes RSI, MACD histogram, ADX at each higher timeframe
 - Left-joins back to base timeframe index (forward-fill only — no lookahead)
 - Column prefix: `tf_4h_rsi`, `tf_1d_adx`, etc.
 
 **`pipeline.py`**
 - Orchestrates all modules in order
-- Applies `StandardScaler` fitted on training window only (passed as parameter — no leakage)
 - Drops warmup NaN rows
-- Returns `(X: pd.DataFrame, feature_names: list[str])`
+- Returns raw (unscaled) `(X: pd.DataFrame, feature_names: list[str])` — scaling is NOT applied here
 - Generates target columns: `target_6`, `target_12`, `target_24`, `target_48`
   - Binary: 1 if close at t+N > close at t by > 0.5%, else 0
+
+**StandardScaler ownership:** `trainer.py` owns the scaler. It fits `StandardScaler` on `X_train` after `pipeline.py` returns the raw feature matrix, then transforms both `X_train` and `X_test`. The fitted scaler is saved alongside the model in `persistence.py`. At inference time (backtest engine, paper trading runner), the saved scaler is loaded and applied to the raw pipeline output before calling `generate_signal`. This makes the leakage boundary explicit: pipeline = raw features, trainer/persistence = scaled features.
 
 ### Tests (`tests/test_features.py`)
 
@@ -272,7 +278,7 @@ Anchored expanding window:
 3. Train `RandomForestClassifier(n_estimators=200, max_depth=10, min_samples_leaf=20)`
 4. Train `XGBClassifier(n_estimators=200, max_depth=6, learning_rate=0.05)`
 5. Combine: `VotingClassifier([rf, xgb], voting='soft')`
-6. Evaluate on test window → compute Sharpe ratio (primary metric, not accuracy)
+6. Evaluate on test window → simulate trades using the trained model's signals on the test period (same backtest engine logic, single pass). Compute Sharpe from the resulting per-trade P&L series: `sharpe = mean(trade_returns) / std(trade_returns) * sqrt(annualization_factor)` where `annualization_factor = trading_periods_per_year / avg_trades_per_period`. If fewer than 10 trades in test window, Sharpe = 0 (insufficient data).
 7. Prune features with importance < 0.01
 8. Flag overfit if `test_sharpe < 0.8 * train_sharpe`
 
@@ -291,7 +297,8 @@ For each `(strategy, symbol)`:
 ### Strategy Selector (`src/models/selector.py`)
 
 - After all strategies train, ranks by out-of-sample Sharpe per symbol
-- Rankings used by ensemble for capital allocation weights
+- Produces initial capital allocation weights for the ensemble at startup: `weight_i = max(sharpe_i, 0) / sum(max(sharpe_j, 0) for all j)`. If all strategies have non-positive Sharpe, fall back to equal weights (0.25 each).
+- These selector-derived weights serve as the **initial state** for the ensemble's rolling performance window before any live/paper trades have accumulated.
 
 ---
 
@@ -312,6 +319,13 @@ for each candle t in test period:
     9. Append to trade journal
 ```
 
+### Position → Trade Lifecycle
+
+`portfolio.py` owns the transition from open `Position` to closed `Trade`:
+1. **Open:** `portfolio.open_position(signal, fill_price, size, stop_loss, take_profit)` → creates `Position`, deducts cash, appends to `open_positions`.
+2. **Close:** `portfolio.close_position(position, exit_price, exit_reason)` → creates `Trade` from `Position` fields + exit info, computes pnl, appends to `closed_trades`, returns cash, removes from `open_positions`.
+3. The backtest engine calls `close_position` when: stop/TP price is breached at candle t's high/low, trailing stop moves and is hit, a SELL signal fires against a LONG position, or the drawdown circuit breaker triggers.
+
 ### Anti-Bias Rules (Hard Constraints)
 
 - Execution at t+1 open — enforced in engine, never current candle close
@@ -321,7 +335,7 @@ for each candle t in test period:
 
 ### Risk Module (`src/backtesting/risk.py`)
 
-- **Position sizing:** Half-Kelly based on strategy's rolling win rate and avg win/loss ratio
+- **Position sizing:** Half-Kelly formula: `f = 0.5 * (p/a - q/b)` where `p` = win rate, `q` = 1-p, `b` = avg win (as % of entry), `a` = avg loss (as % of entry). `f` is clamped to [0, 1] and applied to current portfolio equity to get dollar risk. Computed from strategy's rolling 30-trade history; defaults to `f=0.1` (10%) if fewer than 10 trades available. The 3% per-trade cap is applied AFTER Kelly — use `min(kelly_size, 0.03 * equity)`.
 - **Per-trade cap:** Never risk > 3% of current portfolio equity
 - **Stop-loss:** 1.5× ATR from entry (ATR computed at entry candle)
 - **Take-profit:** 2:1 minimum R:R from entry; or trailing stop at 2× ATR if configured
@@ -348,7 +362,7 @@ Computed per walk-forward test window, then averaged:
 
 ### Deliverable Gate
 
-`python main.py backtest --market crypto --symbol BTC/USDT` produces full competition table.
+`python main.py backtest --market crypto --symbol BTC/USDT --strategy trend` runs a single-strategy (ML Trend Following) walk-forward backtest and produces a report with metrics for that strategy + Buy & Hold baseline. The full multi-strategy competition table is the Phase 3 deliverable (requires all 4 strategies + ensemble).
 
 ---
 
@@ -362,12 +376,18 @@ class Strategy(ABC):
     def generate_signal(self, features: pd.DataFrame) -> Signal: ...
 
     @abstractmethod
-    def get_feature_subset(self) -> list[str]: ...
+    def get_feature_subset(self) -> list[str]:
+        """Return list of feature column names this strategy uses.
+        The backtest engine filters the full feature matrix to only these columns
+        before calling generate_signal. This prevents strategies from accidentally
+        consuming features outside their declared scope."""
 
     @property
     @abstractmethod
     def name(self) -> str: ...
 ```
+
+**Feature subset enforcement:** The backtest engine (and paper trading runner) call `strategy.get_feature_subset()` at initialization and slice `X = full_features[strategy.get_feature_subset()]` before each `generate_signal` call. Strategies must only reference columns returned by their own `get_feature_subset()`. Tests verify each strategy's model was trained on the same column set it declares.
 
 ### Strategy Implementations
 
@@ -394,11 +414,12 @@ class Strategy(ABC):
 ### Ensemble Meta-Strategy (`src/strategies/ensemble.py`)
 
 - Does NOT trade independently
-- Maintains rolling 30-trade performance window per strategy
-- Detects regime: trending (ADX > 25), volatile (ATR > 1.5× 30d avg), ranging (else)
-- Allocates capital weights: proportional to rolling Sharpe per strategy, regime-adjusted
-- Blends signals via weighted soft voting (confidence × weight)
-- Re-evaluates weights every 30 trades or 1 month (whichever comes first)
+- Initialised with weights from `selector.py` output (see Section 4)
+- Maintains rolling 30-trade performance window per strategy; updates weights after each batch of 30 trades
+- **Weight update formula:** `weight_i = max(rolling_sharpe_i, 0) / sum(max(rolling_sharpe_j, 0) for all j)`. If all rolling Sharpes ≤ 0, revert to equal weights (0.25 each).
+- **Regime detection:** trending = ADX > 25; volatile = ATR > 1.5× its 30-day SMA; ranging = else. Regime-adjustment multiplies non-suited strategy weights by 0.5 before renormalization (e.g. in trending regime, mean-reversion weight is halved then weights renormalized to sum to 1.0).
+- **Signal blending:** weighted soft vote: `combined_confidence = sum(signal_i.confidence * weight_i)`. Direction taken from the majority-weighted direction; HOLD if combined_confidence < `confidence_threshold` config.
+- Re-evaluates weights every 30 trades or 30 days (whichever comes first)
 
 ### Deliverable Gate
 
@@ -416,7 +437,7 @@ Polling loop:
 3. Run trained model → Signal
 4. Risk manager validates (identical rules as backtest)
 5. Log full decision reasoning to journal
-6. Update virtual portfolio (simulated fill at last close price)
+6. Update virtual portfolio (simulated fill at last close price + 0.05% slippage + configured fee — matching backtest fill model)
 7. Check divergence against backtest expectations
 8. Sleep until `poll_interval_seconds` elapses
 
