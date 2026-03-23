@@ -1,5 +1,6 @@
 """Feature pipeline: orchestrates all feature modules and generates targets."""
 import logging
+from typing import Tuple, List
 
 import numpy as np
 import pandas as pd
@@ -20,7 +21,7 @@ def build_features(
     df: pd.DataFrame,
     timeframe: str = "1h",
     include_targets: bool = False,
-) -> tuple:
+) -> Tuple[pd.DataFrame, List[str]]:
     """
     Transform raw OHLCV into a feature matrix.
 
@@ -42,8 +43,12 @@ def build_features(
     df = add_volume_features(df)
     df = add_multi_timeframe_features(df, base_timeframe=timeframe)
 
-    # Add targets BEFORE dropping warmup rows (need future close prices)
-    # WARNING: include_targets=True uses forward-looking shift — TRAINING ONLY
+    # Add targets BEFORE dropping warmup rows (need future close prices).
+    # WARNING: include_targets=True must ONLY be called during training label generation.
+    # At inference time (backtest, paper trading), always use include_targets=False.
+    # NOTE FOR CALLERS: When include_targets=True, the last max(horizons)=48 rows will have
+    # NaN targets (no future data). The pipeline does NOT drop these rows. The caller
+    # (trainer.py) must call df.dropna(subset=target_cols) before fitting the model.
     if include_targets:
         close = df["close"]
         n = len(df)
