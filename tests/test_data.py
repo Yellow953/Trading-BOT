@@ -167,3 +167,37 @@ def test_preprocessor_removes_duplicate_timestamps():
     result = preprocess(df)
     assert len(result) == 2
     assert result.index.is_unique
+
+
+def test_cache_partial_miss_fetches_only_missing_range(tmp_path):
+    """Partial cache miss fetches only the uncovered tail, not the full range."""
+    from src.data.cache import DataCache
+    from src.data.providers.base import DataProvider
+
+    db_path = str(tmp_path / "test.db")
+    cache = DataCache(db_path)
+
+    mock_provider = MagicMock(spec=DataProvider)
+    mock_provider.name = "test_provider"
+
+    # First fetch: hours 0-4 (5 rows)
+    first_df = _make_ohlcv_df(5, start=datetime(2024, 1, 1, 0, tzinfo=timezone.utc))
+    mock_provider.fetch_ohlcv.return_value = first_df
+    since1 = datetime(2024, 1, 1, 0, tzinfo=timezone.utc)
+    until1 = datetime(2024, 1, 1, 4, tzinfo=timezone.utc)
+    cache.get_or_fetch(mock_provider, "BTC/USDT", "1h", since1, until1)
+
+    assert mock_provider.fetch_ohlcv.call_count == 1
+
+    # Second fetch: hours 0-9 (10 rows) — first 5 cached, last 5 need fetching
+    second_df = _make_ohlcv_df(6, start=datetime(2024, 1, 1, 4, tzinfo=timezone.utc))
+    mock_provider.fetch_ohlcv.return_value = second_df
+    since2 = datetime(2024, 1, 1, 0, tzinfo=timezone.utc)
+    until2 = datetime(2024, 1, 1, 9, tzinfo=timezone.utc)
+    result = cache.get_or_fetch(mock_provider, "BTC/USDT", "1h", since2, until2)
+
+    # Provider should have been called exactly twice total (once per miss)
+    assert mock_provider.fetch_ohlcv.call_count == 2
+    # Combined result should have 10 unique rows
+    assert len(result) == 10
+    assert result.index.is_unique
