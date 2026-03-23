@@ -45,6 +45,12 @@ def add_multi_timeframe_features(df: pd.DataFrame, base_timeframe: str = "1h") -
         indicators[f"tf_{tf}_macd_hist_norm"] = macd_hist / atr.replace(0, float("nan"))
         indicators[f"tf_{tf}_adx_14"] = _adx(high, low, close, 14)
 
+        # Drop indicator columns that are entirely NaN (insufficient resampled rows)
+        indicators = indicators.dropna(axis=1, how="all")
+        if indicators.empty:
+            logger.debug("Skipping timeframe %s — all indicators are NaN (insufficient data)", tf)
+            continue
+
         # shift(1): completed candle at t is available at t+1 — prevents lookahead
         indicators = indicators.shift(1)
 
