@@ -201,3 +201,131 @@ def test_cache_partial_miss_fetches_only_missing_range(tmp_path):
     # Combined result should have 10 unique rows
     assert len(result) == 10
     assert result.index.is_unique
+
+
+def test_crypto_provider_schema():
+    """CryptoProvider returns DataFrame with correct columns when CCXT call is mocked."""
+    from src.data.providers.crypto import CryptoProvider
+    from unittest.mock import patch, MagicMock
+
+    config = {"markets": {"crypto": {"exchange": "binance", "fee_pct": 0.1}}}
+    since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    until = datetime(2024, 1, 1, 10, tzinfo=timezone.utc)
+
+    # CCXT returns list of [ts_ms, open, high, low, close, volume]
+    fake_ohlcv = [
+        [1704067200000 + i * 3600000, 42000.0, 43000.0, 41000.0, 42500.0, 100.0]
+        for i in range(5)
+    ]
+
+    with patch("ccxt.binance") as mock_exchange_cls:
+        mock_ex = MagicMock()
+        mock_ex.fetch_ohlcv.return_value = fake_ohlcv
+        mock_ex.rateLimit = 0
+        mock_ex.markets = {}
+        mock_ex.load_markets.return_value = None
+        mock_exchange_cls.return_value = mock_ex
+
+        provider = CryptoProvider(config)
+        df = provider.fetch_ohlcv("BTC/USDT", "1h", since, until)
+
+    assert set(df.columns) == {"open", "high", "low", "close", "volume"}
+    assert df.index.tz is not None
+    assert len(df) == 5
+
+
+def test_crypto_provider_available_timeframes():
+    """CryptoProvider lists expected timeframes."""
+    from src.data.providers.crypto import CryptoProvider
+    from unittest.mock import patch, MagicMock
+
+    config = {"markets": {"crypto": {"exchange": "binance", "fee_pct": 0.1}}}
+
+    with patch("ccxt.binance") as mock_exchange_cls:
+        mock_ex = MagicMock()
+        mock_ex.markets = {}
+        mock_ex.load_markets.return_value = None
+        mock_exchange_cls.return_value = mock_ex
+
+        provider = CryptoProvider(config)
+
+    tfs = provider.available_timeframes()
+    assert "1h" in tfs
+    assert "4h" in tfs
+    assert "1d" in tfs
+
+
+def test_stocks_provider_schema():
+    """StocksProvider returns correct DataFrame schema when yfinance is mocked."""
+    from src.data.providers.stocks import StocksProvider
+    from unittest.mock import patch
+
+    config = {"markets": {"stocks": {"fee_pct": 0.0}}}
+    since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    until = datetime(2024, 6, 1, tzinfo=timezone.utc)
+
+    fake_df = _make_ohlcv_df(100, start=since)
+    # yfinance returns Title Case columns
+    fake_df.columns = [c.capitalize() for c in fake_df.columns]
+
+    with patch("yfinance.download", return_value=fake_df):
+        provider = StocksProvider(config)
+        df = provider.fetch_ohlcv("AAPL", "1d", since, until)
+
+    assert set(df.columns) == {"open", "high", "low", "close", "volume"}
+    assert df.index.tz is not None
+
+
+def test_stocks_provider_4h_resamples_from_1h():
+    """StocksProvider requesting 4h resamples from 1h bars (4h not native in yfinance)."""
+    from src.data.providers.stocks import StocksProvider
+    from unittest.mock import patch
+
+    config = {"markets": {"stocks": {"fee_pct": 0.0}}}
+    since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    until = datetime(2024, 1, 8, tzinfo=timezone.utc)
+
+    # 168 hourly bars (7 days)
+    fake_df = _make_ohlcv_df(168, start=since)
+    fake_df.columns = [c.capitalize() for c in fake_df.columns]
+
+    with patch("yfinance.download", return_value=fake_df):
+        provider = StocksProvider(config)
+        df = provider.fetch_ohlcv("AAPL", "4h", since, until)
+
+    # 168 hourly bars / 4 = 42 four-hour bars
+    assert len(df) == 42
+    assert set(df.columns) == {"open", "high", "low", "close", "volume"}
+
+
+def test_stocks_provider_rejects_unsupported_timeframe():
+    """StocksProvider raises ValueError for unsupported timeframes."""
+    from src.data.providers.stocks import StocksProvider
+
+    config = {"markets": {"stocks": {"fee_pct": 0.0}}}
+    since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    until = datetime(2024, 6, 1, tzinfo=timezone.utc)
+
+    provider = StocksProvider(config)
+    with pytest.raises(ValueError, match="Unsupported timeframe"):
+        provider.fetch_ohlcv("AAPL", "3d", since, until)
+
+
+def test_forex_provider_schema():
+    """ForexProvider returns correct DataFrame schema when yfinance is mocked."""
+    from src.data.providers.forex import ForexProvider
+    from unittest.mock import patch
+
+    config = {"markets": {"forex": {"fee_pct": 0.002}}}
+    since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    until = datetime(2024, 6, 1, tzinfo=timezone.utc)
+
+    fake_df = _make_ohlcv_df(100, start=since)
+    fake_df.columns = [c.capitalize() for c in fake_df.columns]
+
+    with patch("yfinance.download", return_value=fake_df):
+        provider = ForexProvider(config)
+        df = provider.fetch_ohlcv("EURUSD=X", "1d", since, until)
+
+    assert set(df.columns) == {"open", "high", "low", "close", "volume"}
+    assert df.index.tz is not None
