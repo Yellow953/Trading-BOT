@@ -3,6 +3,7 @@ import logging
 import click
 import yaml
 from pathlib import Path
+from typing import Optional
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -29,7 +30,7 @@ def cli(ctx: click.Context, config: str) -> None:
 @click.option("--start", default=None, help="Start date YYYY-MM-DD")
 @click.option("--end", default=None, help="End date YYYY-MM-DD")
 @click.pass_context
-def fetch(ctx: click.Context, market: str, symbol: str, timeframe: str, start: str | None, end: str | None) -> None:
+def fetch(ctx: click.Context, market: str, symbol: str, timeframe: str, start: Optional[str], end: Optional[str]) -> None:
     """Fetch and cache market data."""
     from src.data.providers.crypto import CryptoProvider
     from src.data.providers.stocks import StocksProvider
@@ -67,7 +68,7 @@ def fetch(ctx: click.Context, market: str, symbol: str, timeframe: str, start: s
 @click.option("--start", default=None)
 @click.option("--end", default=None)
 @click.pass_context
-def backtest(ctx: click.Context, market: str | None, symbol: str | None, strategy: str | None, start: str | None, end: str | None) -> None:
+def backtest(ctx: click.Context, market: Optional[str], symbol: Optional[str], strategy: Optional[str], start: Optional[str], end: Optional[str]) -> None:
     """Run walk-forward backtest. (Phase 2)"""
     click.echo("Backtest not yet implemented (Phase 2).")
 
@@ -75,7 +76,7 @@ def backtest(ctx: click.Context, market: str | None, symbol: str | None, strateg
 @cli.command()
 @click.option("--market", default=None, type=click.Choice(["crypto", "stocks", "forex"]))
 @click.pass_context
-def train(ctx: click.Context, market: str | None) -> None:
+def train(ctx: click.Context, market: Optional[str]) -> None:
     """Train/retrain models. (Phase 2)"""
     click.echo("Train not yet implemented (Phase 2).")
 
