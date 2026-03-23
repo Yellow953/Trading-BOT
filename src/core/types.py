@@ -1,7 +1,7 @@
 """Shared data contracts for the ML trading bot."""
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Literal, Optional, Tuple
+from typing import List, Literal, Tuple
 
 
 @dataclass

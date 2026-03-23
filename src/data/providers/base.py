@@ -22,11 +22,11 @@ class DataProvider(ABC):
         """Return DataFrame with columns [open, high, low, close, volume], UTC datetime index."""
 
     @abstractmethod
-    def available_symbols(self) -> list:
+    def available_symbols(self) -> list[str]:
         """Return list of tradeable symbols."""
 
     @abstractmethod
-    def available_timeframes(self) -> list:
+    def available_timeframes(self) -> list[str]:
         """Return list of supported timeframe strings."""
 
     @property

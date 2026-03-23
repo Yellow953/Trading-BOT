@@ -1,5 +1,6 @@
 """Clean, normalize, and validate OHLCV DataFrames."""
 import logging
+from typing import Optional
 
 import pandas as pd
 
@@ -75,7 +76,7 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     return df[list(_REQUIRED_COLUMNS)]
 
 
-def _infer_freq(df: pd.DataFrame):
+def _infer_freq(df: pd.DataFrame) -> Optional[str]:
     diffs = df.index[:50].to_series().diff().dropna()
     if diffs.empty:
         return None

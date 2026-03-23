@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.data.providers.base import DataProvider
+
 logger = logging.getLogger(__name__)
 
 _SCHEMA = """
@@ -41,7 +43,7 @@ class DataCache:
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
-    def get_or_fetch(self, provider, symbol: str, timeframe: str,
+    def get_or_fetch(self, provider: "DataProvider", symbol: str, timeframe: str,
                      since: datetime, until: datetime) -> pd.DataFrame:
         """Return cached data; fetch from provider only for missing ranges."""
         # Check if this exact range (or a superset) has already been fetched.
