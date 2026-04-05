@@ -1,0 +1,8 @@
+python-binance>=1.0.19
+pandas-ta-classic>=0.4.0  # imported as: import pandas_ta_classic as ta
+pandas>=2.0.0
+numpy>=1.26.0
+APScheduler>=3.10.0,<4.0.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+pyTelegramBotAPI>=4.14.0
